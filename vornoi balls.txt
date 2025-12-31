@@ -1,0 +1,99 @@
+import open3d as o3d
+import numpy as np
+
+# -------------------------------------------------
+# LOAD POINT CLOUD
+# -------------------------------------------------
+pcd = o3d.io.read_point_cloud("bun000.ply")
+pcd = pcd.voxel_down_sample(0.003)
+
+# Estimate normals (needed!)
+pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
+pts = np.asarray(pcd.points)
+nrm = np.asarray(pcd.normals)
+
+print("Points:", len(pts))
+
+# -------------------------------------------------
+# OPEN3D KD-TREE
+# -------------------------------------------------
+print("Building KDTree...")
+kdtree = o3d.geometry.KDTreeFlann(pcd)
+
+# -------------------------------------------------
+# COMPUTE REAL POLES (NO SKLEARN)
+# -------------------------------------------------
+print("Computing poles...")
+
+pole_centers = []
+pole_radii = []
+
+for i in range(len(pts)):
+    # Get 30 nearest neighbors
+    _, idx, _ = kdtree.search_knn_vector_3d(pts[i], 30)
+    neighbors = pts[idx]
+
+    normal = nrm[i]
+
+    # projection onto normal
+    proj = (neighbors - pts[i]) @ normal
+
+    pos_idx = np.argmax(proj)
+    neg_idx = np.argmin(proj)
+
+    pos_pole = neighbors[pos_idx]
+    neg_pole = neighbors[neg_idx]
+
+    # Store both poles
+    for pole in [pos_pole, neg_pole]:
+        r = np.linalg.norm(pole - pts[i])
+        pole_centers.append(pole)
+        pole_radii.append(r)
+
+pole_centers = np.array(pole_centers)
+pole_radii = np.array(pole_radii)
+
+print("Generated poles:", len(pole_centers))
+
+# -------------------------------------------------
+# MERGE BALLS (distance-based)
+# -------------------------------------------------
+print("Merging balls...")
+
+merged_centers = []
+merged_radii = []
+
+used = np.zeros(len(pole_centers), dtype=bool)
+
+for i in range(len(pole_centers)):
+    if used[i]:
+        continue
+
+    group = [i]
+    for j in range(i + 1, len(pole_centers)):
+        if np.linalg.norm(pole_centers[i] - pole_centers[j]) < 0.015:
+            group.append(j)
+            used[j] = True
+
+    merged_centers.append(np.mean(pole_centers[group], axis=0))
+    merged_radii.append(np.mean(pole_radii[group]))
+
+merged_centers = np.array(merged_centers)
+merged_radii = np.array(merged_radii)
+
+print("Merged balls:", len(merged_centers))
+
+# -------------------------------------------------
+# VISUALIZE BALLS
+# -------------------------------------------------
+print("Showing merged balls...")
+
+geoms = []
+for c, r in zip(merged_centers, merged_radii):
+    sphere = o3d.geometry.TriangleMesh.create_sphere(radius=r)
+    sphere.translate(c)
+    sphere.compute_vertex_normals()
+    sphere.paint_uniform_color([0.2, 0.4, 0.9])
+    geoms.append(sphere)
+
+o3d.visualization.draw_geometries(geoms)
